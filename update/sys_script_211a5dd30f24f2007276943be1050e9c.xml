@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<record_update sys_domain="global" table="sys_script">
+    <sys_script action="INSERT_OR_UPDATE">
+        <abort_action>false</abort_action>
+        <access>package_private</access>
+        <action_delete>false</action_delete>
+        <action_insert>false</action_insert>
+        <action_query>false</action_query>
+        <action_update>true</action_update>
+        <active>true</active>
+        <add_message>false</add_message>
+        <advanced>true</advanced>
+        <change_fields>false</change_fields>
+        <client_callable>false</client_callable>
+        <collection>cmdb_ci</collection>
+        <condition>current.node_state.changes()</condition>
+        <description/>
+        <execute_function>false</execute_function>
+        <filter_condition/>
+        <is_rest>false</is_rest>
+        <message/>
+        <name>cluster</name>
+        <order>100</order>
+        <priority>100</priority>
+        <rest_method/>
+        <rest_method_text/>
+        <rest_service/>
+        <rest_service_text/>
+        <rest_variables/>
+        <role_conditions/>
+        <script><![CDATA[(function executeRule(current, previous /*null when async*/) {
+	
+	//function blocks
+	function updateIncidentCount(){
+		var prev = "";
+		if (typeof previous != "undefined" && previous != null)
+			prev = previous.parent_incident + "";
+		
+		if (!current.parent_incident.nil())
+			updateChildCount(current.parent_incident + "");
+		
+		if (prev != "")
+			updateChildCount(prev);
+	}
+	
+	function updateChildCount(id) {
+		var rec = new GlideRecord("incident");
+		if (!rec.get(id))
+			return;
+		
+		var gr = new GlideAggregate('incident');
+		gr.addQuery("parent_incident", id);
+		gr.addAggregate('COUNT');
+		gr.query();
+		var count = 0;
+		if (gr.next())
+			count = gr.getAggregate('COUNT');
+		
+		rec.child_incidents = count;
+		rec.update();
+	}
+	
+	function createParentIncidentDegraded(){
+		var incParent = new GlideRecord("incident");
+		incParent.initialize();
+		incParent.short_description = "Cluster " + current.cluster.name + " status degraded due to node state change on " + current.name;
+		incParent.cmdb_ci = current.cluster.sys_id;
+		incParent.insert();
+		gs.addInfoMessage("Incident " + incParent.number + " created");
+		parentIncident = incParent.sys_id;
+	}
+	
+	
+	function addChildIncs(){
+		
+		var rel = new GlideRecord('cmdb_rel_ci');
+		rel.addQuery('parent', current.cluster);
+		rel.query();
+		if (rel.next()){
+			updateIncidentCount(current.parent_incident + "");
+		}
+	}
+	
+	function createChildIncident(){
+		var incChild = new GlideRecord("incident");
+		incChild.initialize();
+		incChild.short_description = "Node state on " + current.name + " changed to " + current.node_state.getDisplayValue();
+		incChild.cmdb_ci = current.sys_id;
+		incChild.x_15268_cluster_outage = true;
+		incChild.parent_incident = parentIncident;
+		incChild.insert();
+		gs.addInfoMessage("Incident " + incChild.number + " created");
+	}
+	
+	function singleNodeIncident(){
+		var createIncident = new GlideRecord('incident');
+		createIncident.initialize();
+		createIncident.short_description = "Node state on " + current.name + " changed to " + current.node_state.getDisplayValue();
+		createIncident.cmdb_ci = current.sys_id;
+		createIncident.x_15268_cluster_outage = true;
+		//createIncident.parent_incident = parentIncident;
+		createIncident.insert();
+		gs.addInfoMessage("Incident " + createIncident.number + " created");
+	}
+	
+	
+	//global variable declarations
+	var parentIncident;
+	var incChild;
+	var counter = 0;
+	
+	var gr = new GlideRecord('cmdb_ci');
+	gr.addQuery('sys_id',current.sys_id);
+	gr.query();
+	if(gr.next()) {
+		var cmdbClass = gr.sys_class_name;
+		gs.addInfoMessage("CMDB CLASS " + cmdbClass);
+		
+		
+		//get class
+		var cl = new GlideRecord(cmdbClass);
+		cl.addQuery('sys_id', current.sys_id);
+		cl.query();
+		if (cl.next()) {
+			
+		}
+		
+		//	get cluster CIs children
+		var ch = new GlideRecord('cmdb_rel_ci');
+		ch.addQuery('parent', current.cluster);
+		ch.query();
+		while (ch.next()) {
+			gs.addInfoMessage("parent of " + ch.getDisplayValue('child'));
+			gs.addInfoMessage(ch.child.node_state);
+			
+			if(ch.child.node_state == 0){
+				counter++;
+			}}
+			gs.addInfoMessage("COUNTER = " + counter);
+			
+			if(counter > 1){
+				gs.addErrorMessage("New status UP");
+				//need to look for a current open incident on cluster ci where " status degraded due to node state change on " OR " status down due to node state change on "and if there is one resolve it
+				var check = new GlideRecord('incident');
+				check.addActiveQuery();
+				check.addQuery('cmdb_ci','=',current.cluster);
+				check.query();
+				while(check.next()){
+					check.state = 6;
+					check.work_notes = current.cluster.name + " up";
+					check.update();
+				}
+				
+				//create outage incident on current node if it changes from 0 (up)
+				if(current.node_state.changesFrom(0)){
+					singleNodeIncident();
+				}
+				
+				
+				
+				
+			}
+			
+			if(counter == 1){
+				gs.addErrorMessage("New status DEGRADED");
+				createParentIncidentDegraded();
+				createChildIncident();
+				addChildIncs();
+			}
+			
+			if(counter < 1){
+				gs.addErrorMessage("New status DOWN");
+				//look for a current open incident on cluster ci where " status degraded due to node state change on " and if there is one update it OR make a new parent with this as a child therefore having cascading childs
+				
+				//also tick outage = true on parent incident
+			}
+			
+			
+			
+			
+		}
+		//if cluster status goes back up but not all nodes are up, dont close those incidents (close child incidents business rule)
+		
+	})(current, previous);]]></script>
+        <sys_class_name>sys_script</sys_class_name>
+        <sys_created_by>admin</sys_created_by>
+        <sys_created_on>2017-01-31 11:30:57</sys_created_on>
+        <sys_customer_update>true</sys_customer_update>
+        <sys_domain>global</sys_domain>
+        <sys_domain_path>/</sys_domain_path>
+        <sys_id>211a5dd30f24f2007276943be1050e9c</sys_id>
+        <sys_mod_count>178</sys_mod_count>
+        <sys_name>cluster</sys_name>
+        <sys_overrides/>
+        <sys_package display_value="Cluster" source="x_15268_cluster">27d95d930f24f2007276943be1050e83</sys_package>
+        <sys_policy/>
+        <sys_replace_on_upgrade>false</sys_replace_on_upgrade>
+        <sys_scope display_value="Cluster">27d95d930f24f2007276943be1050e83</sys_scope>
+        <sys_update_name>sys_script_211a5dd30f24f2007276943be1050e9c</sys_update_name>
+        <sys_updated_by>admin</sys_updated_by>
+        <sys_updated_on>2017-02-02 21:51:18</sys_updated_on>
+        <template/>
+        <when>after</when>
+    </sys_script>
+    <sys_translated_text action="delete_multiple" query="documentkey=211a5dd30f24f2007276943be1050e9c"/>
+</record_update>
